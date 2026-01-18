@@ -1,0 +1,18 @@
+# Pulumi
+.pulumi/
+Pulumi.*.yaml.bak
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
