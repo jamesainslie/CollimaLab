@@ -16,3 +16,4 @@ Pulumi.*.yaml.bak
 .vscode/
 *.swp
 *.swo
+CollimaLab
