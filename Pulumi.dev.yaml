@@ -1,0 +1,9 @@
+config:
+  colimalab:unraid-host: "10.0.0.10"
+  colimalab:unraid-user: "root"
+  colimalab:nfs-path: "/mnt/store/colimalab"
+  colimalab:nfs-mount: "/Volumes/CollimaLab"
+  colimalab:colima-cpu: "10"
+  colimalab:colima-memory: "12"
+  colimalab:colima-disk: "10"
+  colimalab:ollama-model: "mistral-small:24b-instruct-2501-q4_K_M"

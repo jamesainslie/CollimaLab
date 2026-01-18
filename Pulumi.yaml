@@ -1,0 +1,3 @@
+name: colimalab
+runtime: go
+description: Colima + k3d + Ollama dev environment with NFS storage
