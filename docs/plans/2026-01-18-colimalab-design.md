@@ -117,49 +117,92 @@ All k3s data stored via Docker on NFS automatically.
 
 **Access from k3d pods:** `http://host.k3d.internal:11434`
 
-## Ansible Automation
+## Pulumi Automation (Go)
+
+### Why Pulumi over Terraform/OpenTofu
+
+- **Real programming language** - Full Go control flow, functions, error handling
+- **Natural for local operations** - SSH commands, local exec, file management
+- **State management** - Tracks what's deployed, enables updates/destroys
+- **Provider ecosystem** - Docker, Kubernetes providers for k3d management
 
 ### Project Structure
 
 ```
 CollimaLab/
-├── ansible.cfg
-├── inventory/
-│   └── hosts.yml           # zeus.local + unraid
-├── playbooks/
-│   ├── site.yml            # Main playbook (runs all)
-│   ├── unraid-nfs.yml      # Configure NFS on Unraid
-│   ├── mac-colima.yml      # Setup Colima on Mac
-│   └── mac-ollama.yml      # Install Ollama + model
-├── roles/
-│   ├── nfs-server/         # Unraid NFS export
-│   ├── nfs-client/         # Mac NFS mount
-│   ├── colima/             # Colima install & config
-│   ├── k3d/                # k3d install & cluster
-│   └── ollama/             # Ollama install & model pull
+├── Pulumi.yaml              # Project definition
+├── Pulumi.dev.yaml          # Dev stack config (hosts, settings)
+├── main.go                  # Entry point
+├── pkg/
+│   ├── unraid/
+│   │   └── nfs.go           # NFS export configuration via SSH
+│   ├── mac/
+│   │   ├── nfs.go           # NFS mount on Mac
+│   │   ├── colima.go        # Colima install & config
+│   │   ├── k3d.go           # k3d cluster management
+│   │   └── ollama.go        # Ollama install & model
+│   └── util/
+│       ├── ssh.go           # SSH helper functions
+│       └── exec.go          # Local command execution
+├── go.mod
+├── go.sum
 └── README.md
 ```
 
-### Inventory
+### Configuration (Pulumi.dev.yaml)
 
 ```yaml
-all:
-  children:
-    unraid:
-      hosts:
-        10.0.0.10:
-          ansible_user: root
-    mac:
-      hosts:
-        localhost:
-          ansible_connection: local
+config:
+  colimalab:unraid-host: "10.0.0.10"
+  colimalab:unraid-user: "root"
+  colimalab:nfs-path: "/mnt/store/colimalab"
+  colimalab:nfs-mount: "/Volumes/CollimaLab"
+  colimalab:colima-cpu: "10"
+  colimalab:colima-memory: "12"
+  colimalab:colima-disk: "10"
+  colimalab:ollama-model: "mistral-small:24b-instruct-2501-q4_K_M"
 ```
 
-### Execution Order
+### Execution Flow
 
-1. `unraid-nfs.yml` - Create directory, export NFS share
-2. `mac-colima.yml` - Mount NFS, uninstall old Colima, install fresh, configure
-3. `mac-ollama.yml` - Install Ollama, pull Mistral model
+```go
+func main() {
+    pulumi.Run(func(ctx *pulumi.Context) error {
+        // 1. Configure NFS export on Unraid (SSH)
+        nfsExport := unraid.NewNFSExport(ctx, ...)
+
+        // 2. Mount NFS on Mac (local exec)
+        nfsMount := mac.NewNFSMount(ctx, ..., pulumi.DependsOn(nfsExport))
+
+        // 3. Uninstall old Colima, install fresh
+        colima := mac.NewColima(ctx, ..., pulumi.DependsOn(nfsMount))
+
+        // 4. Create k3d cluster
+        k3d := mac.NewK3dCluster(ctx, ..., pulumi.DependsOn(colima))
+
+        // 5. Install Ollama and pull model
+        ollama := mac.NewOllama(ctx, ..., pulumi.DependsOn(colima))
+
+        return nil
+    })
+}
+```
+
+### Commands
+
+```bash
+# Preview changes
+pulumi preview
+
+# Deploy everything
+pulumi up
+
+# Destroy (cleanup)
+pulumi destroy
+
+# View current state
+pulumi stack
+```
 
 ## Validation Tests
 
@@ -187,4 +230,5 @@ all:
 
 - Old `~/.colima` backed up to `~/.colima.bak` before removal
 - NFS export can be removed from Unraid manually if needed
-- Ansible is idempotent - safe to run multiple times
+- Pulumi tracks state - `pulumi destroy` reverses deployment
+- Individual components can be removed by commenting out and running `pulumi up`
