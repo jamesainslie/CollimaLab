@@ -28,7 +28,7 @@ func NewK3dCluster(ctx *pulumi.Context, name string, args *K3dClusterArgs, opts 
 	component := &K3dCluster{}
 	err := ctx.RegisterComponentResource("colimalab:mac:K3dCluster", name, component, opts...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("registering k3d cluster component: %w", err)
 	}
 
 	// Install k3d if not present
@@ -46,6 +46,7 @@ func NewK3dCluster(ctx *pulumi.Context, name string, args *K3dClusterArgs, opts 
 	}
 
 	// Check if cluster already exists
+	// Error ignored: if list fails, assume cluster doesn't exist and proceed with creation
 	listOutput, _ := util.RunLocal("k3d", "cluster", "list", "-o", "json")
 	clusterExists := strings.Contains(listOutput, fmt.Sprintf(`"name":"%s"`, args.Name))
 
