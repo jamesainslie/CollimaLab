@@ -7,4 +7,4 @@ config:
   colimalab:colima-memory: "12"
   colimalab:colima-disk: "10"
   colimalab:ollama-model: "mistral-small:24b-instruct-2501-q4_K_M"
-encryptionsalt: v1:G4yhFVBzOa8=:v1:SU3qvuwQfMk6tQj8:JZkoh7jCSgD+HT9pc/js09kHqIt4sA==
+encryptionsalt: v1:a7oS9tkButw=:v1:xmuKAv2gaNCalOjw:tZT+xspFI1kljmEPoY4JdHQcrN3Bfg==

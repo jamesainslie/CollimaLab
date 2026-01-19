@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jamesainslie/CollimaLab/pkg/util"
+	"github.com/pulumi/pulumi-command/sdk/go/command/local"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 )
 
@@ -31,55 +31,68 @@ func NewK3dCluster(ctx *pulumi.Context, name string, args *K3dClusterArgs, opts 
 		return nil, fmt.Errorf("registering k3d cluster component: %w", err)
 	}
 
-	// Install k3d if not present
-	if !util.CommandExists("k3d") {
-		if _, err := util.RunLocal("brew", "install", "k3d"); err != nil {
-			return nil, fmt.Errorf("failed to install k3d: %w", err)
-		}
+	// Build port arguments
+	portArgs := ""
+	for _, port := range args.Ports {
+		portArgs += fmt.Sprintf(" --port %s", port)
 	}
 
-	// Install kubectl if not present
-	if !util.CommandExists("kubectl") {
-		if _, err := util.RunLocal("brew", "install", "kubectl"); err != nil {
-			return nil, fmt.Errorf("failed to install kubectl: %w", err)
-		}
-	}
+	setupScript := fmt.Sprintf(`#!/bin/bash
+set -e
 
-	// Check if cluster already exists
-	// Error ignored: if list fails, assume cluster doesn't exist and proceed with creation
-	listOutput, _ := util.RunLocal("k3d", "cluster", "list", "-o", "json")
-	clusterExists := strings.Contains(listOutput, fmt.Sprintf(`"name":"%s"`, args.Name))
+CLUSTER_NAME="%s"
+SERVERS=%d
 
-	if !clusterExists {
-		// Build create command
-		createArgs := []string{"cluster", "create", args.Name, "--servers", fmt.Sprintf("%d", args.Servers)}
-		for _, port := range args.Ports {
-			createArgs = append(createArgs, "--port", port)
-		}
+echo "=== Installing k3d if not present ==="
+if ! command -v k3d &> /dev/null; then
+    brew install k3d
+fi
 
-		if _, err := util.RunLocal("k3d", createArgs...); err != nil {
-			return nil, fmt.Errorf("failed to create k3d cluster: %w", err)
-		}
-	}
+echo "=== Installing kubectl if not present ==="
+if ! command -v kubectl &> /dev/null; then
+    brew install kubectl
+fi
 
-	// Verify cluster is running
-	output, err := util.RunLocal("kubectl", "get", "nodes")
+echo "=== Checking if cluster exists ==="
+if k3d cluster list -o json 2>/dev/null | grep -q "\"name\":\"$CLUSTER_NAME\""; then
+    echo "Cluster $CLUSTER_NAME already exists"
+else
+    echo "Creating k3d cluster $CLUSTER_NAME..."
+    k3d cluster create "$CLUSTER_NAME" --servers $SERVERS%s
+fi
+
+echo "=== Waiting for cluster to be ready ==="
+sleep 10
+
+echo "=== Verifying cluster ==="
+kubectl get nodes
+
+echo "=== k3d cluster setup complete ==="
+`, args.Name, args.Servers, portArgs)
+
+	// Use pulumi-command to defer execution until 'pulumi up'
+	setup, err := local.NewCommand(ctx, name+"-setup", &local.CommandArgs{
+		Create: pulumi.String(setupScript),
+		Delete: pulumi.String(fmt.Sprintf("k3d cluster delete %s 2>/dev/null || true", args.Name)),
+	}, pulumi.Parent(component))
 	if err != nil {
-		return nil, fmt.Errorf("kubectl verification failed: %w", err)
-	}
-
-	status := "running"
-	if !strings.Contains(output, "Ready") {
-		status = "not ready"
+		return nil, fmt.Errorf("failed to create k3d cluster command: %w", err)
 	}
 
 	component.Name = pulumi.String(args.Name).ToStringOutput()
-	component.Status = pulumi.String(status).ToStringOutput()
+	component.Status = setup.Stdout.ApplyT(func(stdout string) string {
+		if strings.Contains(stdout, "Ready") {
+			return "running"
+		}
+		return "created"
+	}).(pulumi.StringOutput)
 
-	ctx.RegisterResourceOutputs(component, pulumi.Map{
+	if err := ctx.RegisterResourceOutputs(component, pulumi.Map{
 		"name":   component.Name,
 		"status": component.Status,
-	})
+	}); err != nil {
+		return nil, err
+	}
 
 	return component, nil
 }

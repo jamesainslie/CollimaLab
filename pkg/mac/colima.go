@@ -3,10 +3,8 @@ package mac
 import (
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 
-	"github.com/jamesainslie/CollimaLab/pkg/util"
+	"github.com/pulumi/pulumi-command/sdk/go/command/local"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 )
 
@@ -36,65 +34,64 @@ func NewColima(ctx *pulumi.Context, name string, args *ColimaArgs, opts ...pulum
 
 	homeDir, _ := os.UserHomeDir()
 
-	// Stop existing Colima if running
-	util.RunLocal("colima", "stop")
+	// Build the setup script that will run during 'pulumi up'
+	setupScript := fmt.Sprintf(`#!/bin/bash
+set -e
 
-	// Backup existing config
-	colimaDir := filepath.Join(homeDir, ".colima")
-	if _, err := os.Stat(colimaDir); err == nil {
-		backupDir := colimaDir + ".bak"
-		os.RemoveAll(backupDir)
-		os.Rename(colimaDir, backupDir)
-	}
+echo "=== Stopping existing Colima if running ==="
+colima stop 2>/dev/null || true
 
-	// Uninstall existing Colima
-	util.RunLocal("brew", "uninstall", "colima")
-	util.RunLocal("brew", "uninstall", "docker")
+echo "=== Backing up existing config ==="
+if [ -d "%s/.colima" ]; then
+    rm -rf "%s/.colima.bak"
+    mv "%s/.colima" "%s/.colima.bak"
+fi
 
-	// Clean up Lima VM
-	limaDir := filepath.Join(homeDir, ".lima", "colima")
-	os.RemoveAll(limaDir)
+echo "=== Cleaning up Lima VM ==="
+rm -rf "%s/.lima/colima"
 
-	// Install fresh Colima and Docker CLI
-	if _, err := util.RunLocal("brew", "install", "colima"); err != nil {
-		return nil, fmt.Errorf("failed to install colima: %w", err)
-	}
-	if _, err := util.RunLocal("brew", "install", "docker"); err != nil {
-		return nil, fmt.Errorf("failed to install docker: %w", err)
-	}
+echo "=== Uninstalling existing Colima and Docker ==="
+brew uninstall colima 2>/dev/null || true
+brew uninstall docker 2>/dev/null || true
 
-	// Start Colima with configuration
-	startCmd := fmt.Sprintf(
-		"colima start --cpu %d --memory %d --disk %d --vm-type vz --mount-type virtiofs --mount %s:w",
-		args.CPU, args.Memory, args.Disk, args.NFSMount,
-	)
-	if _, err := util.RunLocalShell(startCmd); err != nil {
-		return nil, fmt.Errorf("failed to start colima: %w", err)
-	}
+echo "=== Installing fresh Colima and Docker CLI ==="
+brew install colima
+brew install docker
 
-	// Configure Docker data-root
-	// Create daemon.json in Colima VM
-	daemonConfig := fmt.Sprintf(`{"data-root": "%s"}`, args.DockerRoot)
-	configCmd := fmt.Sprintf(`colima ssh -- 'sudo mkdir -p /etc/docker && echo '\''%s'\'' | sudo tee /etc/docker/daemon.json && sudo systemctl restart docker'`, daemonConfig)
-	if _, err := util.RunLocalShell(configCmd); err != nil {
-		return nil, fmt.Errorf("failed to configure docker data-root: %w", err)
-	}
+echo "=== Starting Colima with configuration ==="
+colima start --cpu %d --memory %d --disk %d --vm-type vz --mount-type virtiofs --mount %s:w
 
-	// Verify Docker works
-	output, err := util.RunLocal("docker", "info")
+echo "=== Configuring Docker data-root ==="
+colima ssh -- 'sudo mkdir -p /etc/docker && echo '\''{"data-root": "%s"}'\'' | sudo tee /etc/docker/daemon.json && sudo systemctl restart docker'
+
+echo "=== Waiting for Docker to be ready ==="
+sleep 5
+
+echo "=== Verifying Docker ==="
+docker info
+
+echo "=== Colima setup complete ==="
+`, homeDir, homeDir, homeDir, homeDir, homeDir,
+		args.CPU, args.Memory, args.Disk, args.NFSMount, args.DockerRoot)
+
+	// Use pulumi-command to defer execution until 'pulumi up'
+	setup, err := local.NewCommand(ctx, name+"-setup", &local.CommandArgs{
+		Create: pulumi.String(setupScript),
+		Delete: pulumi.String("colima stop 2>/dev/null || true"),
+	}, pulumi.Parent(component))
 	if err != nil {
-		return nil, fmt.Errorf("docker verification failed: %w", err)
+		return nil, fmt.Errorf("failed to create colima setup command: %w", err)
 	}
 
-	if !strings.Contains(output, args.DockerRoot) {
-		ctx.Log.Warn("Docker data-root may not be configured correctly", nil)
-	}
+	component.Status = setup.Stdout.ApplyT(func(stdout string) string {
+		return "running"
+	}).(pulumi.StringOutput)
 
-	component.Status = pulumi.String("running").ToStringOutput()
-
-	ctx.RegisterResourceOutputs(component, pulumi.Map{
+	if err := ctx.RegisterResourceOutputs(component, pulumi.Map{
 		"status": component.Status,
-	})
+	}); err != nil {
+		return nil, err
+	}
 
 	return component, nil
 }

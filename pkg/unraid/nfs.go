@@ -2,9 +2,8 @@ package unraid
 
 import (
 	"fmt"
-	"strings"
 
-	"github.com/jamesainslie/CollimaLab/pkg/util"
+	"github.com/pulumi/pulumi-command/sdk/go/command/local"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 )
 
@@ -31,43 +30,53 @@ func NewNFSExport(ctx *pulumi.Context, name string, args *NFSExportArgs, opts ..
 		return nil, err
 	}
 
-	sshCfg := util.SSHConfig{Host: args.Host, User: args.User}
+	// Build SSH command that will run during 'pulumi up'
+	exportLine := fmt.Sprintf("%s %s(rw,async,no_subtree_check,no_root_squash,all_squash,anonuid=0,anongid=0)",
+		args.ExportPath, args.Network)
 
-	// Test SSH connectivity
-	if err := util.TestSSH(sshCfg); err != nil {
-		return nil, fmt.Errorf("cannot connect to Unraid: %w", err)
+	setupScript := fmt.Sprintf(`#!/bin/bash
+set -e
+
+SSH_TARGET="%s@%s"
+EXPORT_PATH="%s"
+EXPORT_LINE='%s'
+
+echo "=== Testing SSH connectivity to Unraid ==="
+ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new $SSH_TARGET "echo 'SSH connection successful'"
+
+echo "=== Creating export directory ==="
+ssh $SSH_TARGET "mkdir -p $EXPORT_PATH/docker && chmod 777 $EXPORT_PATH"
+
+echo "=== Checking if NFS export exists ==="
+if ssh $SSH_TARGET "grep -q '$EXPORT_PATH' /etc/exports 2>/dev/null"; then
+    echo "NFS export already exists"
+else
+    echo "Adding NFS export..."
+    ssh $SSH_TARGET "echo '$EXPORT_LINE' >> /etc/exports"
+    echo "Reloading NFS exports..."
+    ssh $SSH_TARGET "exportfs -ra"
+fi
+
+echo "=== NFS export setup complete ==="
+`, args.User, args.Host, args.ExportPath, exportLine)
+
+	// Use pulumi-command to defer execution until 'pulumi up'
+	setup, err := local.NewCommand(ctx, name+"-setup", &local.CommandArgs{
+		Create: pulumi.String(setupScript),
+	}, pulumi.Parent(component))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create NFS export command: %w", err)
 	}
 
-	// Create export directory
-	mkdirCmd := fmt.Sprintf("mkdir -p %s/docker && chmod 777 %s", args.ExportPath, args.ExportPath)
-	if _, err := util.RunSSH(sshCfg, mkdirCmd); err != nil {
-		return nil, fmt.Errorf("failed to create export directory: %w", err)
-	}
+	component.ExportPath = setup.Stdout.ApplyT(func(_ string) string {
+		return args.ExportPath
+	}).(pulumi.StringOutput)
 
-	// Check if export already exists
-	checkCmd := fmt.Sprintf("grep -q '%s' /etc/exports 2>/dev/null && echo exists || echo missing", args.ExportPath)
-	status, _ := util.RunSSH(sshCfg, checkCmd)
-
-	if strings.TrimSpace(status) == "missing" {
-		// Add NFS export
-		exportLine := fmt.Sprintf("%s %s(rw,async,no_subtree_check,no_root_squash,all_squash,anonuid=0,anongid=0)",
-			args.ExportPath, args.Network)
-		addExportCmd := fmt.Sprintf("echo '%s' >> /etc/exports", exportLine)
-		if _, err := util.RunSSH(sshCfg, addExportCmd); err != nil {
-			return nil, fmt.Errorf("failed to add NFS export: %w", err)
-		}
-
-		// Reload NFS exports
-		if _, err := util.RunSSH(sshCfg, "exportfs -ra"); err != nil {
-			return nil, fmt.Errorf("failed to reload NFS exports: %w", err)
-		}
-	}
-
-	component.ExportPath = pulumi.String(args.ExportPath).ToStringOutput()
-
-	ctx.RegisterResourceOutputs(component, pulumi.Map{
+	if err := ctx.RegisterResourceOutputs(component, pulumi.Map{
 		"exportPath": component.ExportPath,
-	})
+	}); err != nil {
+		return nil, err
+	}
 
 	return component, nil
 }
